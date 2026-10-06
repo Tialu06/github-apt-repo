@@ -118,19 +118,108 @@ jobs:
 
           chmod +x /tmp/Chirpity.AppImage
 
+          # Extract the AppImage so we can reuse Chirpity's
+          # own desktop file and icons.
+          cd /tmp
+          ./Chirpity.AppImage --appimage-extract >/dev/null
+
+          cd "$GITHUB_WORKSPACE"
+
           mkdir -p chirpity-deb/DEBIAN
           mkdir -p chirpity-deb/opt/chirpity
           mkdir -p chirpity-deb/usr/bin
+          mkdir -p chirpity-deb/usr/share/applications
 
+          # Install the actual application.
           cp /tmp/Chirpity.AppImage \
             chirpity-deb/opt/chirpity/Chirpity.AppImage
 
+          # Command-line launcher.
           cat > chirpity-deb/usr/bin/chirpity <<'EOF'
           #!/bin/sh
           exec /opt/chirpity/Chirpity.AppImage "$@"
           EOF
 
           chmod 755 chirpity-deb/usr/bin/chirpity
+
+          # --------------------------------------------------------
+          # Find Chirpity's desktop file
+          # --------------------------------------------------------
+
+          DESKTOP_FILE=$(find /tmp/squashfs-root \
+            -type f \
+            -name '*.desktop' \
+            | head -n 1)
+
+          if [ -n "$DESKTOP_FILE" ]; then
+            echo "Found desktop file: $DESKTOP_FILE"
+
+            cp "$DESKTOP_FILE" \
+              chirpity-deb/usr/share/applications/chirpity.desktop
+
+            # Make the desktop file invoke our installed launcher.
+            sed -i 's|^Exec=.*|Exec=/usr/bin/chirpity %U|' \
+              chirpity-deb/usr/share/applications/chirpity.desktop
+
+            # The AppImage's desktop file may contain a different
+            # application name. Keep the visible name as Chirpity.
+            sed -i 's|^Name=.*|Name=Chirpity|' \
+              chirpity-deb/usr/share/applications/chirpity.desktop
+          else
+            echo "No desktop file found in AppImage."
+
+            cat > chirpity-deb/usr/share/applications/chirpity.desktop <<'EOF'
+          [Desktop Entry]
+          Name=Chirpity
+          Comment=AI-powered bird vocalisation analysis
+          Exec=/usr/bin/chirpity %U
+          Terminal=false
+          Type=Application
+          Categories=AudioVideo;Audio;Science;
+          EOF
+          fi
+
+          # --------------------------------------------------------
+          # Copy icons from the AppImage
+          # --------------------------------------------------------
+
+          ICON_COUNT=0
+
+          for SIZE in 16 24 32 48 64 128 256 512; do
+            ICON=$(find /tmp/squashfs-root \
+              -type f \
+              \( -name '*.png' -o -name '*.svg' \) \
+              | grep -E "/${SIZE}x${SIZE}/|/${SIZE}x${SIZE}@|/${SIZE}\." \
+              | head -n 1 || true)
+
+            if [ -n "$ICON" ]; then
+              mkdir -p \
+                "chirpity-deb/usr/share/icons/hicolor/${SIZE}x${SIZE}/apps"
+
+              cp "$ICON" \
+                "chirpity-deb/usr/share/icons/hicolor/${SIZE}x${SIZE}/apps/chirpity.${ICON##*.}"
+
+              ICON_COUNT=$((ICON_COUNT + 1))
+            fi
+          done
+
+          echo "Copied $ICON_COUNT icon(s)."
+
+          # Tell the desktop file to use the installed icon.
+          if [ "$ICON_COUNT" -gt 0 ]; then
+            if grep -q '^Icon=' \
+              chirpity-deb/usr/share/applications/chirpity.desktop; then
+              sed -i 's|^Icon=.*|Icon=chirpity|' \
+                chirpity-deb/usr/share/applications/chirpity.desktop
+            else
+              sed -i '/^\[Desktop Entry\]/a Icon=chirpity' \
+                chirpity-deb/usr/share/applications/chirpity.desktop
+            fi
+          fi
+
+          # --------------------------------------------------------
+          # Debian package metadata
+          # --------------------------------------------------------
 
           cat > chirpity-deb/DEBIAN/control <<EOF
           Package: chirpity
@@ -149,7 +238,10 @@ jobs:
             chirpity-deb \
             incoming/chirpity_${VERSION}-1_amd64.deb
 
-          dpkg-deb --info incoming/chirpity_${VERSION}-1_amd64.deb
+          dpkg-deb \
+            --info \
+            incoming/chirpity_${VERSION}-1_amd64.deb
+
 
       # ------------------------------------------------------------
       # Build APT repository
