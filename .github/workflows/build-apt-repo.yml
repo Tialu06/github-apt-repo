@@ -180,42 +180,35 @@ jobs:
           fi
 
           # --------------------------------------------------------
-          # Copy icons from the AppImage
+          # Install Chirpity's official icon
           # --------------------------------------------------------
 
-          ICON_COUNT=0
+          ICON_SOURCE="/tmp/squashfs-root/usr/share/icons/hicolor/1024x1024/apps/chirpity.png"
 
-          for SIZE in 16 24 32 48 64 128 256 512; do
-            ICON=$(find /tmp/squashfs-root \
-              -type f \
-              \( -name '*.png' -o -name '*.svg' \) \
-              | grep -E "/${SIZE}x${SIZE}/|/${SIZE}x${SIZE}@|/${SIZE}\." \
-              | head -n 1 || true)
+          if [ -f "$ICON_SOURCE" ]; then
+            mkdir -p \
+              chirpity-deb/usr/share/icons/hicolor/1024x1024/apps
 
-            if [ -n "$ICON" ]; then
-              mkdir -p \
-                "chirpity-deb/usr/share/icons/hicolor/${SIZE}x${SIZE}/apps"
+            cp "$ICON_SOURCE" \
+              chirpity-deb/usr/share/icons/hicolor/1024x1024/apps/chirpity.png
 
-              cp "$ICON" \
-                "chirpity-deb/usr/share/icons/hicolor/${SIZE}x${SIZE}/apps/chirpity.${ICON##*.}"
-
-              ICON_COUNT=$((ICON_COUNT + 1))
-            fi
-          done
-
-          echo "Copied $ICON_COUNT icon(s)."
-
-          # Tell the desktop file to use the installed icon.
-          if [ "$ICON_COUNT" -gt 0 ]; then
-            if grep -q '^Icon=' \
-              chirpity-deb/usr/share/applications/chirpity.desktop; then
-              sed -i 's|^Icon=.*|Icon=chirpity|' \
-                chirpity-deb/usr/share/applications/chirpity.desktop
-            else
-              sed -i '/^\[Desktop Entry\]/a Icon=chirpity' \
-                chirpity-deb/usr/share/applications/chirpity.desktop
-            fi
+            echo "Installed official Chirpity icon."
+          else
+            echo "ERROR: Chirpity icon not found:"
+            echo "$ICON_SOURCE"
+            exit 1
           fi
+
+          # The desktop file uses Icon=chirpity.
+          if grep -q '^Icon=' \
+            chirpity-deb/usr/share/applications/chirpity.desktop; then
+            sed -i 's|^Icon=.*|Icon=chirpity|' \
+              chirpity-deb/usr/share/applications/chirpity.desktop
+          else
+            sed -i '/^\[Desktop Entry\]/a Icon=chirpity' \
+              chirpity-deb/usr/share/applications/chirpity.desktop
+          fi
+
 
           # --------------------------------------------------------
           # Debian package metadata
