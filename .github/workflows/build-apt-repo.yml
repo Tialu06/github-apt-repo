@@ -10,6 +10,10 @@ permissions:
   pages: write
   id-token: write
 
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -21,7 +25,7 @@ jobs:
       - name: Install tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y reprepro gnupg curl jq
+          sudo apt-get install -y reprepro gnupg curl jq dpkg-dev
 
       - name: Import APT signing key
         env:
@@ -35,7 +39,7 @@ jobs:
 
           echo "GNUPGHOME=$GNUPGHOME" >> "$GITHUB_ENV"
 
-      - name: Download latest Obsidian .deb
+      - name: Find latest Obsidian release
         run: |
           mkdir -p incoming
 
@@ -44,21 +48,31 @@ jobs:
             https://api.github.com/repos/obsidianmd/obsidian-releases/releases/latest \
             -o release.json
 
+          echo "Latest release:"
+          jq -r '.tag_name' release.json
+
+          echo "Available assets:"
+          jq -r '.assets[].name' release.json
+
+      - name: Download Obsidian amd64 .deb
+        run: |
           DEB_URL=$(jq -r '
             .assets[]
-            | select(.name | test("^obsidian_.*_amd64\\.deb$"))
+            | select(.name | test("^obsidian[_-].*amd64\\.deb$"))
             | .browser_download_url
           ' release.json | head -n 1)
 
           if [ -z "$DEB_URL" ] || [ "$DEB_URL" = "null" ]; then
-            echo "Could not find Obsidian amd64 .deb"
+            echo "ERROR: No amd64 .deb found in the latest Obsidian release."
             exit 1
           fi
 
-          echo "Downloading: $DEB_URL"
+          echo "Downloading:"
+          echo "$DEB_URL"
 
           curl -fL "$DEB_URL" -o incoming/obsidian.deb
 
+          echo "Downloaded package:"
           dpkg-deb --info incoming/obsidian.deb
 
       - name: Build APT repository
@@ -66,31 +80,30 @@ jobs:
           rm -rf site
           mkdir -p site
 
-          cp -r conf site/
+          cp -r conf site/conf
 
           cd site
 
-          reprepro \
-            --basedir "$PWD" \
-            includedeb stable ../incoming/obsidian.deb
+          reprepro includedeb stable ../incoming/obsidian.deb
 
           cp ../apt-repo-public-key.asc .
 
-      - name: Configure GitHub Pages
+      - name: Setup GitHub Pages
         uses: actions/configure-pages@v5
 
-      - name: Upload GitHub Pages artifact
+      - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v4
         with:
           path: site
 
   deploy:
+    needs: build
+
+    runs-on: ubuntu-latest
+
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
-
-    runs-on: ubuntu-latest
-    needs: build
 
     steps:
       - name: Deploy to GitHub Pages
