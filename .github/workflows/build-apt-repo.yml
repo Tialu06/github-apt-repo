@@ -3,10 +3,11 @@ name: Build APT repository
 on:
   workflow_dispatch:
   schedule:
-    - cron: "17 4 * * *"
+    # Check every hour.
+    - cron: "17 * * * *"
 
 permissions:
-  contents: read
+  contents: write
   pages: write
   id-token: write
 
@@ -15,12 +16,98 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+
+  # ==============================================================
+  # Check whether anything actually changed
+  # ==============================================================
+
+  check:
+    name: Check for new releases
+    runs-on: ubuntu-latest
+
+    outputs:
+      changed: ${{ steps.compare.outputs.changed }}
+      obsidian_version: ${{ steps.versions.outputs.obsidian }}
+      chirpity_version: ${{ steps.versions.outputs.chirpity }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Check latest versions
+        id: versions
+        run: |
+          set -euo pipefail
+
+          curl -fsSL \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/obsidianmd/obsidian-releases/releases/latest \
+            -o /tmp/obsidian-release.json
+
+          curl -fsSL \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/Mattk70/Chirpity-Electron/releases/latest \
+            -o /tmp/chirpity-release.json
+
+          OBSIDIAN_VERSION=$(jq -r '.tag_name' /tmp/obsidian-release.json)
+
+          CHIRPITY_VERSION=$(jq -r '.tag_name' /tmp/chirpity-release.json)
+          CHIRPITY_VERSION="${CHIRPITY_VERSION#v}"
+          CHIRPITY_VERSION="${CHIRPITY_VERSION#V}"
+
+          test -n "$OBSIDIAN_VERSION"
+          test "$OBSIDIAN_VERSION" != "null"
+
+          test -n "$CHIRPITY_VERSION"
+          test "$CHIRPITY_VERSION" != "null"
+
+          echo "Latest Obsidian: $OBSIDIAN_VERSION"
+          echo "Latest Chirpity: $CHIRPITY_VERSION"
+
+          echo "obsidian=$OBSIDIAN_VERSION" >> "$GITHUB_OUTPUT"
+          echo "chirpity=$CHIRPITY_VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Compare with published versions
+        id: compare
+        env:
+          LATEST_OBSIDIAN: ${{ steps.versions.outputs.obsidian }}
+          LATEST_CHIRPITY: ${{ steps.versions.outputs.chirpity }}
+        run: |
+          set -euo pipefail
+
+          PUBLISHED_OBSIDIAN=$(jq -r '.obsidian // empty' versions.json)
+          PUBLISHED_CHIRPITY=$(jq -r '.chirpity // empty' versions.json)
+
+          echo "Published Obsidian: ${PUBLISHED_OBSIDIAN:-<none>}"
+          echo "Published Chirpity: ${PUBLISHED_CHIRPITY:-<none>}"
+
+          if [ "$LATEST_OBSIDIAN" = "$PUBLISHED_OBSIDIAN" ] &&
+             [ "$LATEST_CHIRPITY" = "$PUBLISHED_CHIRPITY" ]; then
+            echo "No new versions. Nothing to build."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "A new version is available."
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+
+  # ==============================================================
+  # Build and publish only when something changed
+  # ==============================================================
+
   build:
+    name: Build and publish APT repository
+    needs: check
+    if: ${{ needs.check.outputs.changed == 'true' }}
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
+
+      # ------------------------------------------------------------
+      # Build tools
+      # ------------------------------------------------------------
 
       - name: Install build tools
         run: |
@@ -32,11 +119,18 @@ jobs:
             jq \
             dpkg-dev
 
+      # ------------------------------------------------------------
+      # GPG
+      # ------------------------------------------------------------
+
       - name: Import APT signing key
         env:
           APT_SIGNING_KEY: ${{ secrets.APT_SIGNING_KEY }}
         run: |
+          set -euo pipefail
+
           export GNUPGHOME="$RUNNER_TEMP/gnupg"
+
           mkdir -p "$GNUPGHOME"
           chmod 700 "$GNUPGHOME"
 
@@ -50,91 +144,134 @@ jobs:
 
       - name: Prepare APT repository
         run: |
+          set -euo pipefail
+
           mkdir -p apt-repo/conf
+          mkdir -p incoming
 
-          cp conf/distributions apt-repo/conf/distributions
-          cp apt-repo-public-key.asc apt-repo/
+          cp conf/distributions \
+            apt-repo/conf/distributions
 
-      # ------------------------------------------------------------
+          cp apt-repo-public-key.asc \
+            apt-repo/
+
+      # ============================================================
       # Obsidian
-      # ------------------------------------------------------------
+      # ============================================================
+
+      - name: Restore Obsidian package cache
+        uses: actions/cache@v4
+        with:
+          path: incoming/obsidian.deb
+          key: obsidian-${{ needs.check.outputs.obsidian_version }}-amd64
 
       - name: Download latest Obsidian
         run: |
-          mkdir -p incoming
+          set -euo pipefail
+
+          if [ -f incoming/obsidian.deb ]; then
+            echo "Using cached Obsidian package."
+            dpkg-deb --info incoming/obsidian.deb
+            exit 0
+          fi
 
           curl -fsSL \
             -H "Accept: application/vnd.github+json" \
             https://api.github.com/repos/obsidianmd/obsidian-releases/releases/latest \
-            -o obsidian-release.json
-
-          VERSION=$(jq -r '.tag_name' obsidian-release.json)
-
-          echo "Obsidian version: $VERSION"
+            -o /tmp/obsidian-release.json
 
           DEB_URL=$(jq -r '
             .assets[]
             | select(.name | test("^obsidian[_-].*amd64\\.deb$"))
             | .browser_download_url
-          ' obsidian-release.json | head -n 1)
+          ' /tmp/obsidian-release.json | head -n 1)
 
           test -n "$DEB_URL"
           test "$DEB_URL" != "null"
+
+          echo "Downloading Obsidian:"
+          echo "$DEB_URL"
 
           curl -fL "$DEB_URL" \
             -o incoming/obsidian.deb
 
           dpkg-deb --info incoming/obsidian.deb
 
-      # ------------------------------------------------------------
+      # ============================================================
       # Chirpity
-      # ------------------------------------------------------------
+      # ============================================================
 
-      - name: Download and package latest Chirpity
+      - name: Restore Chirpity AppImage cache
+        uses: actions/cache@v4
+        with:
+          path: /tmp/Chirpity.AppImage
+          key: chirpity-appimage-${{ needs.check.outputs.chirpity_version }}-x86_64
+
+      - name: Download latest Chirpity
         run: |
+          set -euo pipefail
+
+          if [ -f /tmp/Chirpity.AppImage ]; then
+            echo "Using cached Chirpity AppImage."
+            exit 0
+          fi
+
           curl -fsSL \
             -H "Accept: application/vnd.github+json" \
             https://api.github.com/repos/Mattk70/Chirpity-Electron/releases/latest \
-            -o chirpity-release.json
-
-          VERSION=$(jq -r '.tag_name' chirpity-release.json)
-
-          VERSION="${VERSION#v}"
-          VERSION="${VERSION#V}"
-
-          echo "Chirpity version: $VERSION"
+            -o /tmp/chirpity-release.json
 
           APPIMAGE_URL=$(jq -r '
             .assets[]
             | select(.name == "Chirpity-x86_64.AppImage")
             | .browser_download_url
-          ' chirpity-release.json)
+          ' /tmp/chirpity-release.json)
 
           test -n "$APPIMAGE_URL"
           test "$APPIMAGE_URL" != "null"
+
+          echo "Downloading Chirpity:"
+          echo "$APPIMAGE_URL"
 
           curl -fL "$APPIMAGE_URL" \
             -o /tmp/Chirpity.AppImage
 
           chmod +x /tmp/Chirpity.AppImage
 
-          # Extract the AppImage so we can reuse Chirpity's
-          # own desktop file and icons.
+      - name: Build Chirpity Debian package
+        run: |
+          set -euo pipefail
+
+          VERSION="${{ needs.check.outputs.chirpity_version }}"
+
+          echo "Building Chirpity version: $VERSION"
+
+          # Extract AppImage.
           cd /tmp
+          rm -rf squashfs-root
           ./Chirpity.AppImage --appimage-extract >/dev/null
 
           cd "$GITHUB_WORKSPACE"
 
+          # Package structure.
           mkdir -p chirpity-deb/DEBIAN
           mkdir -p chirpity-deb/opt/chirpity
           mkdir -p chirpity-deb/usr/bin
           mkdir -p chirpity-deb/usr/share/applications
+          mkdir -p chirpity-deb/usr/share/icons/hicolor/1024x1024/apps
+          mkdir -p chirpity-deb/usr/share/pixmaps
 
-          # Install the actual application.
+          # --------------------------------------------------------
+          # Application
+          # --------------------------------------------------------
+
           cp /tmp/Chirpity.AppImage \
             chirpity-deb/opt/chirpity/Chirpity.AppImage
 
-          # Command-line launcher.
+          # --------------------------------------------------------
+          # Command line launcher
+          # --------------------------------------------------------
+
           cat > chirpity-deb/usr/bin/chirpity <<'EOF'
           #!/bin/sh
           exec /opt/chirpity/Chirpity.AppImage "$@"
@@ -143,75 +280,38 @@ jobs:
           chmod 755 chirpity-deb/usr/bin/chirpity
 
           # --------------------------------------------------------
-          # Find Chirpity's desktop file
-          # --------------------------------------------------------
-
-          DESKTOP_FILE=$(find /tmp/squashfs-root \
-            -type f \
-            -name '*.desktop' \
-            | head -n 1)
-
-          if [ -n "$DESKTOP_FILE" ]; then
-            echo "Found desktop file: $DESKTOP_FILE"
-
-            cp "$DESKTOP_FILE" \
-              chirpity-deb/usr/share/applications/chirpity.desktop
-
-            # Make the desktop file invoke our installed launcher.
-            sed -i 's|^Exec=.*|Exec=/usr/bin/chirpity %U|' \
-              chirpity-deb/usr/share/applications/chirpity.desktop
-
-            # The AppImage's desktop file may contain a different
-            # application name. Keep the visible name as Chirpity.
-            sed -i 's|^Name=.*|Name=Chirpity|' \
-              chirpity-deb/usr/share/applications/chirpity.desktop
-          else
-            echo "No desktop file found in AppImage."
-
-            cat > chirpity-deb/usr/share/applications/chirpity.desktop <<'EOF'
-          [Desktop Entry]
-          Name=Chirpity
-          Comment=AI-powered bird vocalisation analysis
-          Exec=/usr/bin/chirpity %U
-          Terminal=false
-          Type=Application
-          Categories=AudioVideo;Audio;Science;
-          EOF
-          fi
-
-          # --------------------------------------------------------
-          # Install Chirpity's official icon
+          # Official Chirpity icon
           # --------------------------------------------------------
 
           ICON_SOURCE="/tmp/squashfs-root/usr/share/icons/hicolor/1024x1024/apps/chirpity.png"
 
-          if [ -f "$ICON_SOURCE" ]; then
-            mkdir -p \
-              chirpity-deb/usr/share/icons/hicolor/1024x1024/apps
+          test -f "$ICON_SOURCE"
 
-            cp "$ICON_SOURCE" \
-              chirpity-deb/usr/share/icons/hicolor/1024x1024/apps/chirpity.png
+          cp "$ICON_SOURCE" \
+            chirpity-deb/usr/share/icons/hicolor/1024x1024/apps/chirpity.png
 
-            echo "Installed official Chirpity icon."
-          else
-            echo "ERROR: Chirpity icon not found:"
-            echo "$ICON_SOURCE"
-            exit 1
-          fi
-
-          # The desktop file uses Icon=chirpity.
-          if grep -q '^Icon=' \
-            chirpity-deb/usr/share/applications/chirpity.desktop; then
-            sed -i 's|^Icon=.*|Icon=chirpity|' \
-              chirpity-deb/usr/share/applications/chirpity.desktop
-          else
-            sed -i '/^\[Desktop Entry\]/a Icon=chirpity' \
-              chirpity-deb/usr/share/applications/chirpity.desktop
-          fi
-
+          # Fallback location for Cinnamon and other desktops.
+          cp "$ICON_SOURCE" \
+            chirpity-deb/usr/share/pixmaps/chirpity.png
 
           # --------------------------------------------------------
-          # Debian package metadata
+          # Desktop entry
+          # --------------------------------------------------------
+
+          cat > chirpity-deb/usr/share/applications/chirpity.desktop <<'EOF'
+          [Desktop Entry]
+          Name=Chirpity
+          Comment=Chirpity is a bioacoustics platform for the analysis of bird song and other wildlife sounds.
+          Exec=/usr/bin/chirpity %U
+          Terminal=false
+          Type=Application
+          Icon=chirpity
+          StartupWMClass=chirpity
+          Categories=Utility;
+          EOF
+
+          # --------------------------------------------------------
+          # Debian metadata
           # --------------------------------------------------------
 
           cat > chirpity-deb/DEBIAN/control <<EOF
@@ -225,16 +325,19 @@ jobs:
            AI-powered bird vocalisation analysis application.
           EOF
 
+          # --------------------------------------------------------
+          # Build package
+          # --------------------------------------------------------
+
           dpkg-deb \
             --build \
             --root-owner-group \
             chirpity-deb \
-            incoming/chirpity_${VERSION}-1_amd64.deb
+            "incoming/chirpity_${VERSION}-1_amd64.deb"
 
           dpkg-deb \
             --info \
-            incoming/chirpity_${VERSION}-1_amd64.deb
-
+            "incoming/chirpity_${VERSION}-1_amd64.deb"
 
       # ------------------------------------------------------------
       # Build APT repository
@@ -242,6 +345,8 @@ jobs:
 
       - name: Add packages to APT repository
         run: |
+          set -euo pipefail
+
           reprepro \
             --basedir apt-repo \
             includedeb stable incoming/obsidian.deb
@@ -250,8 +355,14 @@ jobs:
             --basedir apt-repo \
             includedeb stable incoming/chirpity_*.deb
 
-      - name: Show repository
+      # ------------------------------------------------------------
+      # Verify repository
+      # ------------------------------------------------------------
+
+      - name: Verify repository
         run: |
+          set -euo pipefail
+
           echo "=== Packages ==="
           find apt-repo/pool -type f -print
 
@@ -259,8 +370,18 @@ jobs:
           echo "=== Metadata ==="
           find apt-repo/dists -type f -print
 
+          echo
+          echo "=== Chirpity ==="
+          grep -A20 '^Package: chirpity$' \
+            apt-repo/dists/stable/main/binary-amd64/Packages
+
+          echo
+          echo "=== Obsidian ==="
+          grep -A20 '^Package: obsidian$' \
+            apt-repo/dists/stable/main/binary-amd64/Packages
+
       # ------------------------------------------------------------
-      # Publish with GitHub Pages
+      # Publish Pages
       # ------------------------------------------------------------
 
       - name: Setup GitHub Pages
@@ -271,8 +392,39 @@ jobs:
         with:
           path: apt-repo
 
+      # ------------------------------------------------------------
+      # Remember successfully published versions
+      # ------------------------------------------------------------
+
+      - name: Update published version state
+        run: |
+          set -euo pipefail
+
+          cat > versions.json <<EOF
+          {
+            "obsidian": "${{ needs.check.outputs.obsidian_version }}",
+            "chirpity": "${{ needs.check.outputs.chirpity_version }}"
+          }
+          EOF
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add versions.json
+
+          git diff --cached --quiet || \
+            git commit -m "Update published package versions"
+
+          git push
+
+  # ==============================================================
+  # Deploy
+  # ==============================================================
+
   deploy:
-    needs: build
+    name: Deploy GitHub Pages
+    needs: [check, build]
+    if: ${{ needs.check.outputs.changed == 'true' }}
     runs-on: ubuntu-latest
 
     environment:
