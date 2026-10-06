@@ -160,7 +160,7 @@ jobs:
       # ============================================================
 
       - name: Restore Obsidian package cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: incoming/obsidian.deb
           key: obsidian-${{ needs.check.outputs.obsidian_version }}-amd64
@@ -202,7 +202,7 @@ jobs:
       # ============================================================
 
       - name: Restore Chirpity AppImage cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: /tmp/Chirpity.AppImage
           key: chirpity-appimage-${{ needs.check.outputs.chirpity_version }}-x86_64
@@ -385,7 +385,7 @@ jobs:
       # ------------------------------------------------------------
 
       - name: Setup GitHub Pages
-        uses: actions/configure-pages@v5
+        uses: actions/configure-pages@v6
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v4
@@ -438,4 +438,4 @@ jobs:
     steps:
       - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
