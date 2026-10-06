@@ -6,30 +6,21 @@ on:
     - cron: "17 4 * * *"
 
 permissions:
-  contents: write
+  contents: read
   pages: write
   id-token: write
 
 concurrency:
   group: apt-repository
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   build:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout source repository
+      - name: Checkout repository
         uses: actions/checkout@v6
-        with:
-          path: source
-
-      - name: Checkout APT repository state
-        uses: actions/checkout@v6
-        with:
-          ref: apt-data
-          path: repo
-          fetch-depth: 1
 
       - name: Install build tools
         run: |
@@ -39,8 +30,7 @@ jobs:
             gnupg \
             curl \
             jq \
-            dpkg-dev \
-            desktop-file-utils
+            dpkg-dev
 
       - name: Import APT signing key
         env:
@@ -55,21 +45,32 @@ jobs:
           echo "GNUPGHOME=$GNUPGHOME" >> "$GITHUB_ENV"
 
       # ------------------------------------------------------------
+      # Prepare repository
+      # ------------------------------------------------------------
+
+      - name: Prepare APT repository
+        run: |
+          mkdir -p apt-repo/conf
+
+          cp conf/distributions apt-repo/conf/distributions
+          cp apt-repo-public-key.asc apt-repo/
+
+      # ------------------------------------------------------------
       # Obsidian
       # ------------------------------------------------------------
 
-      - name: Check latest Obsidian version
+      - name: Download latest Obsidian
         run: |
+          mkdir -p incoming
+
           curl -fsSL \
             -H "Accept: application/vnd.github+json" \
             https://api.github.com/repos/obsidianmd/obsidian-releases/releases/latest \
             -o obsidian-release.json
 
-          jq -r '.tag_name' obsidian-release.json
+          VERSION=$(jq -r '.tag_name' obsidian-release.json)
 
-      - name: Download latest Obsidian
-        run: |
-          mkdir -p incoming
+          echo "Obsidian version: $VERSION"
 
           DEB_URL=$(jq -r '
             .assets[]
@@ -80,10 +81,8 @@ jobs:
           test -n "$DEB_URL"
           test "$DEB_URL" != "null"
 
-          echo "Downloading Obsidian:"
-          echo "$DEB_URL"
-
-          curl -fL "$DEB_URL" -o incoming/obsidian.deb
+          curl -fL "$DEB_URL" \
+            -o incoming/obsidian.deb
 
           dpkg-deb --info incoming/obsidian.deb
 
@@ -91,20 +90,16 @@ jobs:
       # Chirpity
       # ------------------------------------------------------------
 
-      - name: Check latest Chirpity version
+      - name: Download and package latest Chirpity
         run: |
           curl -fsSL \
             -H "Accept: application/vnd.github+json" \
             https://api.github.com/repos/Mattk70/Chirpity-Electron/releases/latest \
             -o chirpity-release.json
 
-          jq -r '.tag_name' chirpity-release.json
+          VERSION=$(jq -r '.tag_name' chirpity-release.json)
 
-      - name: Download and package Chirpity
-        run: |
-          CHIRPITY_VERSION=$(jq -r '.tag_name' chirpity-release.json)
-
-          VERSION="${CHIRPITY_VERSION#v}"
+          VERSION="${VERSION#v}"
           VERSION="${VERSION#V}"
 
           echo "Chirpity version: $VERSION"
@@ -117,9 +112,6 @@ jobs:
 
           test -n "$APPIMAGE_URL"
           test "$APPIMAGE_URL" != "null"
-
-          echo "Downloading Chirpity:"
-          echo "$APPIMAGE_URL"
 
           curl -fL "$APPIMAGE_URL" \
             -o /tmp/Chirpity.AppImage
@@ -160,61 +152,31 @@ jobs:
           dpkg-deb --info incoming/chirpity_${VERSION}-1_amd64.deb
 
       # ------------------------------------------------------------
-      # APT repository
+      # Build APT repository
       # ------------------------------------------------------------
 
-      - name: Add packages to repository
+      - name: Add packages to APT repository
         run: |
-          cp source/apt-repo-public-key.asc repo/
-
           reprepro \
-            --basedir repo \
+            --basedir apt-repo \
             includedeb stable incoming/obsidian.deb
 
           reprepro \
-            --basedir repo \
+            --basedir apt-repo \
             includedeb stable incoming/chirpity_*.deb
 
-      - name: Show repository contents
+      - name: Show repository
         run: |
           echo "=== Packages ==="
-          find repo/pool -type f -print
+          find apt-repo/pool -type f -print
 
           echo
-          echo "=== Repository metadata ==="
-          find repo/dists -type f -print
+          echo "=== Metadata ==="
+          find apt-repo/dists -type f -print
 
       # ------------------------------------------------------------
-      # Persist repository state
+      # Publish with GitHub Pages
       # ------------------------------------------------------------
-
-      - name: Commit repository state
-        working-directory: repo
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-          git add .
-
-          if git diff --cached --quiet; then
-            echo "No repository changes."
-          else
-            git commit -m "Update APT repository"
-            git push origin apt-data
-          fi
-
-      # ------------------------------------------------------------
-      # GitHub Pages
-      # ------------------------------------------------------------
-
-      - name: Prepare Pages artifact
-        run: |
-          rm -rf site
-          mkdir -p site
-
-          cp -a repo/dists site/
-          cp -a repo/pool site/
-          cp -a repo/apt-repo-public-key.asc site/
 
       - name: Setup GitHub Pages
         uses: actions/configure-pages@v5
@@ -222,7 +184,7 @@ jobs:
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v4
         with:
-          path: site
+          path: apt-repo
 
   deploy:
     needs: build
@@ -231,6 +193,10 @@ jobs:
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
+
+    permissions:
+      pages: write
+      id-token: write
 
     steps:
       - name: Deploy to GitHub Pages
