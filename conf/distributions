@@ -1,0 +1,8 @@
+Origin: Tialu06
+Label: Tialu06 APT Repository
+Codename: stable
+Suite: stable
+Architectures: amd64
+Components: main
+Description: APT repository for Tialu06
+SignWith: 976462D4E97B2332DC81F7E6C4C1E90BF3504142
