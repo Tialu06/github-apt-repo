@@ -2,8 +2,13 @@ name: Build APT repository
 
 on:
   workflow_dispatch:
+    inputs:
+      force_build:
+        description: "Force a full repository build"
+        required: false
+        default: false
+        type: boolean
   schedule:
-    # Check every hour.
     - cron: "17 * * * *"
 
 permissions:
@@ -72,6 +77,7 @@ jobs:
         env:
           LATEST_OBSIDIAN: ${{ steps.versions.outputs.obsidian }}
           LATEST_CHIRPITY: ${{ steps.versions.outputs.chirpity }}
+          FORCE_BUILD: ${{ inputs.force_build }}
         run: |
           set -euo pipefail
 
@@ -81,8 +87,11 @@ jobs:
           echo "Published Obsidian: ${PUBLISHED_OBSIDIAN:-<none>}"
           echo "Published Chirpity: ${PUBLISHED_CHIRPITY:-<none>}"
 
-          if [ "$LATEST_OBSIDIAN" = "$PUBLISHED_OBSIDIAN" ] &&
-             [ "$LATEST_CHIRPITY" = "$PUBLISHED_CHIRPITY" ]; then
+          if [ "$FORCE_BUILD" = "true" ]; then
+            echo "Force build requested."
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          elif [ "$LATEST_OBSIDIAN" = "$PUBLISHED_OBSIDIAN" ] &&
+               [ "$LATEST_CHIRPITY" = "$PUBLISHED_CHIRPITY" ]; then
             echo "No new versions. Nothing to build."
             echo "changed=false" >> "$GITHUB_OUTPUT"
           else
