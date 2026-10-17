@@ -1,0 +1,41 @@
+
+name: Keep repository active
+
+on:
+  schedule:
+    # Run twice a month, safely within the 60-day limit
+    - cron: "0 3 1,15 * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  keep-alive:
+    name: Update repository heartbeat
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Update heartbeat
+        run: |
+          set -euo pipefail
+
+          date -u +"%Y-%m-%dT%H:%M:%SZ" \
+            > .github/heartbeat.txt
+
+          git config user.name "github-actions[bot]"
+          git config user.email \
+            "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add .github/heartbeat.txt
+
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+            exit 0
+          fi
+
+          git commit -m "chore: keep repository active"
+          git push
