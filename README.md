@@ -4,52 +4,50 @@
 
 A simple APT repository for installing and updating [Obsidian](https://obsidian.md/) and [Chirpity](https://chirpity.net/).
 
-The repository is automatically checked for new releases every hour using GitHub Actions. When a new version is available, it is downloaded, packaged as a `.deb`, and added to the repository.
-
-If no update is available, the workflow exits without downloading anything.
-
 ## Supported Applications
 
-| Application | Source | Package |
+| Application | Upstream format | APT package |
 |---|---|---|
 | [Obsidian](https://obsidian.md/) | `.deb` | `obsidian` |
 | [Chirpity](https://chirpity.net/) | AppImage | `chirpity` |
 
-### Chirpity
+Chirpity's AppImage is automatically packaged as a `.deb`, including desktop integration.
 
-Chirpity does not provide a `.deb` package upstream. This repository automatically wraps its AppImage in a `.deb` package, including desktop integration such as the application icon and menu entry.
+## Add the Repository
 
-This allows Chirpity to be installed and updated using the same APT workflow as a regular Debian package.
-
-## How It Works
-
-1. GitHub Actions checks for new upstream releases every hour.
-2. The latest version is compared with the version already in the repository.
-3. If there is no update, the workflow stops.
-4. If a new version is available, the required files are downloaded and packaged.
-5. The updated `.deb` is added to the APT repository.
-
-This keeps the repository up to date without repeatedly downloading unchanged files.
-
-## Using the Repository
-
-> **Note:** This repository is primarily intended for personal use. If you want to use it yourself, you will need to replace the repository's GPG signing key with your own.
-
-Once configured, the packages can be installed and updated using the standard APT commands:
+Import the repository's public signing key and configure APT:
 
 ```bash
+sudo install -d -m 0755 /etc/apt/keyrings
+
+curl -fsSL https://tialu06.github.io/github-apt-repo/apt-repo-public-key.asc \
+  | sudo gpg --dearmor --yes -o /etc/apt/keyrings/github-apt-repo.gpg
+
+sudo chmod 0644 /etc/apt/keyrings/github-apt-repo.gpg
+
+echo "deb [signed-by=/etc/apt/keyrings/github-apt-repo.gpg arch=amd64] https://tialu06.github.io/github-apt-repo stable main" \
+  | sudo tee /etc/apt/sources.list.d/github-apt-repo.list
+
 sudo apt update
+```
+
+Install either application:
+```bash
 sudo apt install obsidian
 sudo apt install chirpity
 ```
 
-Future updates can be installed with:
+Update installed applications normally:
 ```bash
 sudo apt update
 sudo apt upgrade
 ```
 
-## License
-The code, scripts, GitHub Actions workflows, and packaging configuration in this repository are licensed under the MIT License.
+## Automation
 
-Obsidian and Chirpity are third-party software and remain subject to their respective licenses. This repository is not affiliated with or endorsed by either project.
+GitHub Actions checks upstream releases daily. When an application changes, the workflow downloads and packages the new version, updates the APT repository, and publishes it. Unchanged application packages are reused.
+
+A separate monthly keep-alive workflow creates a nearly empty commit to help prevent GitHub Actions scheduled workflows from being disabled due to repository inactivity. This is a workaround, not a guarantee that scheduled workflows will remain enabled.
+## License
+
+The repository's code, workflows, and packaging configuration are licensed under the MIT License. Obsidian and Chirpity remain subject to their respective licenses. This repository is not affiliated with or endorsed by either project.
