@@ -13,6 +13,26 @@ A simple APT repository for installing and updating [Obsidian](https://obsidian.
 
 Chirpity's AppImage is automatically packaged as a `.deb`, including desktop integration.
 
+## Important: Repository Signing Configuration
+
+Before this project can work correctly, the repository signing keys must be configured.
+
+### 1. Configure the signing key pair
+
+In `conf/distributions`, configure the `SignWith` option with a custom public/private key pair.
+
+These keys are used to sign the APT repository, allowing clients to verify the authenticity and integrity of the published packages.
+
+### 2. Configure GitHub Actions
+
+Add a repository secret named `APT_SIGNING_KEY` to your GitHub repository.
+
+The secret must contain the **private signing key** corresponding to the public key configured above.
+
+GitHub Actions uses this secret to sign the repository during the publishing process.
+
+**Important:** Never commit your private signing key to the repository or expose it in logs or other public places.
+
 ## Add the Repository
 
 Import the repository's public signing key and configure APT:
